@@ -1,0 +1,422 @@
+#!/bin/sh
+
+MOLE_RC="log_main"
+OPEN="vi"
+now=$(date '+%Y-%m-%d_%H-%M-%S')
+if [ "$EDITOR" = "" ] && [ "$VISUAL" != "" ]
+then
+    OPEN="$VISUAL"
+elif [ "$EDITOR" != "" ] && [ "$VISUAL" = "" ]
+then
+    OPEN="$EDITOR"
+fi
+
+GROUP=false
+BEFORE=false
+AFTER=false
+MOST=false
+FIDIR=false
+LIST=false
+SECRET=false
+ARG_COUNT=$#
+
+Help(){
+    echo "-h – Vypíše nápovědu k použití skriptu";
+    echo "[-g GROUP] FILE – Zadaný soubor bude otevřen.\nPokud byl zadán přepínač -g, dané otevření souboru bude zároveň přiřazeno do skupiny s názvem GROUP. GROUP může být název jak existující, tak nové skupiny."
+    echo "mole [-m] [FILTERS] [DIRECTORY] – Pokud DIRECTORY odpovídá existujícímu adresáři, skript z daného adresáře vybere soubor, který má být otevřen.
+    Pokud nebyl zadán adresář, předpokládá se aktuální adresář.
+    Pokud bylo v daném adresáři editováno skriptem více souborů, vybere se soubor, který byl pomocí skriptu otevřen (editován) jako poslední.
+    Pokud byl zadán argument -m, tak skript vybere soubor, který byl pomocí skriptu otevřen (editován) nejčastěji.
+    Pokud bude při použití přepínače -m nalezeno více souborů se stejným maximálním počtem otevření, může mole vybrat kterýkoliv z nich.
+    Výběr souboru může být dále ovlivněn zadanými filtry FILTERS.
+    Pokud nebyl v daném adresáři otevřen (editován) ještě žádný soubor, případně žádný soubor nevyhovuje zadaným filtrům, jedná se o chybu."
+    echo "mole list [FILTERS] [DIRECTORY] – Skript zobrazí seznam souborů, které byly v daném adresáři otevřeny (editovány) pomocí skriptu.
+    Pokud nebyl zadán adresář, předpokládá se aktuální adresář.
+    Seznam souborů může být filtrován pomocí FILTERS.
+    Seznam souborů bude lexikograficky seřazen a každý soubor bude uveden na samostatném řádku.
+    Každý řádek bude mít formát FILENAME:<INDENT>GROUP_1,GROUP_2,..., kde FILENAME je jméno souboru (i s jeho případnými příponami), <INDENT> je počet mezer potřebných k zarovnání a GROUP_* jsou názvy skupin, u kterých je soubor evidován.
+    Seznam skupin bude lexikograficky seřazen.
+    Pokud budou skupiny upřesněny pomocí přepínače -g (viz sekce FILTRY), uvažujte při výpisu souborů a skupin pouze záznamy patřící do těchto skupin.
+    Pokud soubor nepatří do žádné skupiny, bude namísto seznamu skupin vypsán pouze znak -.
+    Minimální počet mezer použitých k zarovnání (INDENT) je jedna. Každý řádek bude zarovnán tak, aby seznam skupin začínal na stejné pozici."
+    exit 0;
+}
+lineG(){
+    grep "$path;" "$MOLE_RC" > /dev/null
+    if [ "$?" = 0 ]
+    then 
+        grep  "$path;" "$MOLE_RC" | grep -E "(^| )$GROUPS_ARG " > /dev/null
+        if [ "$?" = 0 ]
+        then 
+            REPLACE_LINE=$(grep ";$path\;" "$MOLE_RC")
+            tmp=$(grep -v "$REPLACE_LINE" "$MOLE_RC")
+            echo "$tmp" > "$MOLE_RC";
+            echo "$REPLACE_LINE;$now" >> "$MOLE_RC"
+        else
+            REPLACE_LINE=$(grep ";$path\;" "$MOLE_RC")
+            tmp=$(grep -v "$REPLACE_LINE" "$MOLE_RC")
+            echo "$tmp" > "$MOLE_RC";
+            echo "$GROUPS_ARG $REPLACE_LINE;$now" >> "$MOLE_RC"
+            fi
+    else 
+        echo "$GROUPS_ARG ;$path;$now" >> "$MOLE_RC"
+    fi
+}
+line(){
+    grep "\;$path\;" "$MOLE_RC" > /dev/null
+    if [  "$?" = 0 ]
+    then 
+        REPLACE_LINE=$(grep "\;$path\;" "$MOLE_RC")
+        tmp=$(grep -v "$REPLACE_LINE" "$MOLE_RC")
+        echo "$tmp" > "$MOLE_RC";
+        echo "$REPLACE_LINE;$now" >> "$MOLE_RC"
+    else 
+        echo ";$path;$now" >>"$MOLE_RC"
+    fi
+}
+filters(){
+    if [ "$AFTER" = true ]
+    then 
+        ADATEIN=$(echo "$ADATEIN" | tr -d '-')
+        val=$(echo "$val" | awk -F';' -v adate="$ADATEIN" '
+            {
+                printf "%s;%s", $1, $2
+                for (i = 3; i <=NF; i++) {
+                    d=$i; gsub(/-/,"",d);
+                    if (d > adate) 
+                        printf ";%s", $i
+                }
+                printf "\n"
+            }'
+        )
+        val=$(echo "$val" | awk -F ';' 'NF >= 3')
+    fi
+    if [ "$BEFORE" = true ]
+    then 
+        BDATEIN=$(echo "$BDATEIN" | tr -d '-')
+        val=$(echo "$val" | awk -F';' -v adate="$BDATEIN" '
+            {
+                printf "%s;%s", $1, $2
+                for (i = 3; i <= NF; i++) {
+                    d=$i; gsub(/-/,"",d);
+                    if (d < adate) 
+                        printf ";%s", $i
+                }
+                printf "\n"
+            }'
+        )
+        val=$(echo "$val" | awk -F ';' 'NF >= 3')
+    fi
+    if [ "$GROUP" = true ];
+    then  # nahraje do tempu vyhovujici radky
+        IFS=','
+        temp2=""
+        for substring in $GROUPS_ARG
+        do
+            temp=$(echo "$val" | grep -E "(^| )$substring ")
+            while read -r line
+            do
+                if echo "$temp2" | grep -q "^$line$"
+                then
+                    continue
+                fi
+                if [ -n "$temp2" ]
+                then
+                    temp2="$temp2\n$line"
+                else
+                    temp2="$line"
+                fi
+            done <<< "$temp"
+        done
+        val="$temp2"
+    fi
+}
+open(){
+    val=$(grep -Ei "$current_dir" "$MOLE_RC")  
+    filters
+    emptyValue
+    bool=false
+    while [ "$bool" = false ]
+    do
+        if [ "$MOST" = true ]; # kontrola jestli se nachazi -m
+        then
+            TEMP="$val"
+            TEMP2=$(echo "$val" | awk -F ';' '{if (NF > maxFields) {maxFields = NF; line = $0}} END {print line}')
+            path="$(echo "$TEMP2" | cut -d ';' -f 2)"
+            if [ -f "$path" ]
+            then
+                bool=true
+            else
+                val="$TEMP"
+                val=$(echo "$val" | grep -v "$TEMP2")
+            fi
+        else
+            TEMP="$val"
+            TEMP2=$(echo "$val" | tail -n 1) 
+            path="$(echo "$TEMP2" | cut -d ';' -f 2)"
+            if [ -f "$path" ]
+            then
+                bool=true
+            else
+                val="$TEMP"
+                val=$(echo "$val" | grep -v "$TEMP2")
+            fi
+        fi
+    done
+    $OPEN "$path"
+    line
+}
+listFormat(){
+    val=$(echo "$val" | awk -F ';' '
+        {
+            file = $2
+            sub(".*/", "", file)
+            gsub(" ", ",", $1)
+            if (length($1) > 0) {
+                groups = $1
+            } else {
+                groups = "-"
+            }
+            files[file] = groups
+            if (length(file) > max_length) {
+                max_length = length(file)
+            }
+        }
+        END {
+            for (file in files) {
+                if (substr(files[file], length(files[file])) == ",") {
+                    files[file] = substr(files[file], 1, length(files[file])-1)
+                }
+                printf "%-*s %s\n", max_length + 1, file ":", files[file]
+            }
+        }' | sort)
+}
+flagControl(){
+    if [ "$1" = true ]
+    then
+        echo "chyba: vicekrat pouzity prepinac";
+        exit 104;
+    fi
+}
+FirstControl(){
+    if [ "$GROUP" = true ] || [ "$BEFORE" = true ] || [ "$AFTER" = true ] || [ "$MOST" = true ] || [ "$FIDIR" = true ];
+    then
+        echo "chyba: secret-log nebo list nejsou prvni argument";
+        exit 104;
+    fi
+}
+emptyValue(){
+    if [ "$val" = "" ]
+    then
+        echo "chyba: zadny soubor nevyhovuje"
+        exit 104;
+    fi
+}
+
+while [ "$#" -gt 0 ]; do
+  key="$1"
+  case $key in
+    -h)
+        if [ $ARG_COUNT = 1 ]
+        then
+            Help
+        else
+            echo "chyba: -h musi byt jediny argument";
+            exit 104;
+        fi
+        ;;
+    -g)
+        flagControl "$GROUP"
+        GROUP=true
+        GROUPS_ARG="$2" 
+        shift
+        shift
+        ;;
+
+    -b) #before date filter
+        flagControl "$BEFORE"
+        BEFORE=true
+        BDATEIN="$2"
+        shift
+        shift
+        ;;
+    -a) #after date filter
+        flagControl "$AFTER"
+        AFTER=true
+        ADATEIN="$2"
+        shift
+        shift
+        ;;
+    -m)
+        #nejcastejsi editace
+        flagControl "$MOST"
+        MOST=true
+        shift
+        ;;
+    list)
+        #list
+        flagControl "$LIST"
+        FirstControl
+        LIST=true;
+        shift
+        ;;
+    secret-log)
+        #secret log
+        flagControl "$SECRET"
+        FirstControl
+        SECRET=true;
+        shift
+        ;;       
+    *)
+        #file or dir
+        flagControl "$FIDIR"
+        FD=$key
+        FIDIR=true
+        if  echo "$FD" | grep -q ","
+        then
+            if [ "$SECRET" = false ]
+            then
+            echo "chyba: vice file nebo directory v argumentu"
+            exit 104;
+            fi
+        fi
+        shift
+        ;;
+  esac
+done
+
+if [ "$SECRET" = true ] # kontrola secret log
+then 
+    if [ "$MOST" = true ] || [ "$GROUP" = true ] || [ "$LIST" = true ]; # kontrola jestli se nachazi -m
+    then
+        echo "chyba: prepinac -g nebo -m nebo list u secret-log";
+        exit 104;
+    fi
+    if [ "$FIDIR" = true ]
+    then
+        IFS=','
+        tmp=""
+        for substring in $FD
+        do
+            current_dir=$(realpath "$substring" 2> /dev/null) > /dev/null
+            if [ -d "$current_dir" ] #jestli se jedna o directory
+            then
+                val=$(grep -Ei "$current_dir/[^ /;]+;" "$MOLE_RC")
+                filters
+                if [ -n "$tmp" ]
+                then
+                    tmp="$tmp\n$val"
+                else
+                    tmp="$val"
+                fi
+            else
+            echo "chyba: nejadna se o adresar"
+            exit 104;
+            fi
+        done
+        val="$tmp"
+    else
+        val=$(cat "$MOLE_RC")
+    fi
+    val=$(echo "$val" | awk -F ';' '
+        {
+            for (i = 2; i <= NF; i++) {
+                printf ";%s", $i
+            }
+            printf "\n"
+    }')
+    path="$HOME/$USER/.mole"
+    echo "$path"
+    val=$(echo "$val" | cut -c 2-)
+    ZIP="log_""$USER""_$now"
+    echo "$val" > "$path/$ZIP"
+    bzip2 -f "$path/$ZIP"
+
+elif [ "$LIST" = true ] # kontrola list
+then
+    if [ "$FIDIR" = true ] # kontrola flag adresar
+    then
+        current_dir=$(realpath "$FD") > /dev/null
+        if [ -d "$current_dir" ] #jestli se jedna o directory
+        then
+            val=$(grep -Ei "$current_dir/[^ /;]+;" "$MOLE_RC")
+            emptyValue
+            val=$(echo "$val" | while IFS=';' read -r col1 rest; do
+            sorted_col1=$(echo "$col1" | tr ' ' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | sort | tr '\n' ' ')
+            echo "${sorted_col1};${rest}"
+            done)
+
+            val=$(echo "$val" | sed 's/^ //') 
+            if [ "$MOST" = true ]; # kontrola jestli se nachazi -m
+            then
+                echo "chyba: prepinac -m v listu";
+                exit 104;
+            fi
+            filters
+            emptyValue
+            listFormat
+            echo "$val"
+        else
+            echo "chyba: nejadna se o adresar"
+            exit 104;
+        fi
+    else
+        current_dir=$(pwd)
+        val=$(grep -Ei "$current_dir/[^ /;]+;" "$MOLE_RC")
+        val=$(echo "$val" | while IFS=';' read -r col1 rest; do
+        sorted_col1=$(echo "$col1" | tr ' ' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | sort | tr '\n' ' ')
+        echo "${sorted_col1};${rest}"
+        done)
+        val=$(echo "$val" | sed 's/^ //')
+        if [ "$MOST" = true ]; # kontrola jestli se nachazi -m
+        then
+            echo "chyba: prepinac -m v listu";
+            exit 104;
+        fi
+        filters
+        emptyValue
+        listFormat
+        echo "$val"
+    fi
+elif [ "$FIDIR" = true ] 
+then
+    current_dir=$(realpath "$FD") > /dev/null
+    if [ -d "$current_dir" ] #jestli se jedna o directory
+    then
+        open
+    else #file
+        if [ "$MOST" = true ] || [ "$BEFORE" = true ] || [ "$AFTER" = true ]; # kontrola jestli se nachazi -m
+        then
+            echo "chyba: prepinac -m nebo -a nebo -b u file";
+            exit 104;
+        fi
+        if [ "$GROUP" = true ]
+        then
+            if  echo "$GROUPS_ARG" | grep -q "," 
+            then
+                echo "chyba: vice grup u file"
+                exit 104;
+            fi
+            $OPEN "$FD"
+            path=$(realpath "$FD" 2>/dev/null)
+            if [ $? != 0 ]
+            then
+                echo "chyba: realpath nenainstalovana nebo neexistuje" >&2
+                exit 104;
+            fi
+            lineG #zapsani do MOLE_RC
+        else
+            $OPEN "$FD"
+            path=$(realpath "$FD")
+            if [ $? != 0 ]
+            then
+                echo "chyba: realpath nenainstalovana nebo neexistuje"
+                exit 104;
+            fi
+            line
+        fi
+    fi
+else  
+    current_dir=$(pwd)
+    open
+fi
